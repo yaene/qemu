@@ -113,6 +113,8 @@ static uint64_t l1_dmisses;
 static uint64_t l2_mem_accesses;
 static uint64_t l2_misses;
 
+static bool log_mem;
+
 static int pow_of_two(int num)
 {
     g_assert((num & (num - 1)) == 0);
@@ -425,6 +427,22 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
+
+    if (log_mem) {
+      g_autoptr(GString) log_line = g_string_new("");
+
+      g_string_append_printf(log_line, "%u,0x%" PRIx64 ",%s", vcpu_index,
+                             effective_addr,
+                             qemu_plugin_mem_is_store(info) ? "store" : "load");
+      g_string_append_printf(log_line, ",0x%" PRIx64, insn->addr);
+      g_string_append_printf(log_line, ",%s,", insn->disas_str);
+      if (insn->symbol) {
+        g_string_append_printf(log_line, "(%s)", insn->symbol);
+      }
+      g_string_append(log_line, "\n");
+
+      qemu_plugin_outs(log_line->str);
+    }
 }
 
 static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
@@ -806,6 +824,15 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
                 policy = FIFO;
             } else {
                 fprintf(stderr, "invalid eviction policy: %s\n", opt);
+                return -1;
+            }
+        } else if (g_strcmp0(tokens[0], "logmem") == 0) {
+            if (g_strcmp0(tokens[1], "on") == 0) {
+                log_mem = true;
+            } else if(g_strcmp0(tokens[1], "off") == 0) {
+                log_mem = false;
+            } else {
+                fprintf(stderr, "invalid setting for logmem: %s\n", opt);
                 return -1;
             }
         } else {
