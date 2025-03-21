@@ -433,12 +433,12 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
       g_autoptr(GString) log_line = g_string_new("");
 
       g_string_append_printf(log_line,
-                             "cpu: %u, physaddr: 0x%16" PRIx64
-                             ", virtaddr: 0x%16" PRIx64 ", type: %s",
+                             "cpu: %u, physaddr: 0x%016" PRIx64
+                             ", virtaddr: 0x%016" PRIx64 ", type: %s",
                              vcpu_index, effective_addr, vaddr,
                              qemu_plugin_mem_is_store(info) ? "store" : "load");
-      g_string_append_printf(log_line, ", insn-vaddr: 0x%16" PRIx64, insn->vaddr);
-      g_string_append_printf(log_line, ", insn-physaddr: 0x%16" PRIx64,
+      g_string_append_printf(log_line, ", insn-vaddr: 0x%016" PRIx64, insn->vaddr);
+      g_string_append_printf(log_line, ", insn-physaddr: 0x%016" PRIx64,
                              insn->addr);
       g_string_append_printf(log_line, ",insn-disas: %s", insn->disas_str);
       if (insn->symbol) {
