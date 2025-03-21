@@ -84,6 +84,7 @@ typedef struct {
     char *disas_str;
     const char *symbol;
     uint64_t addr;
+    uint64_t vaddr;
     uint64_t l1_dmisses;
     uint64_t l1_imisses;
     uint64_t l2_misses;
@@ -431,11 +432,15 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     if (log_mem) {
       g_autoptr(GString) log_line = g_string_new("");
 
-      g_string_append_printf(log_line, "%u,0x%" PRIx64 ",%s", vcpu_index,
-                             effective_addr,
+      g_string_append_printf(log_line,
+                             "cpu: %u, physaddr: 0x%16" PRIx64
+                             ", virtaddr: 0x%16" PRIx64 ", type: %s",
+                             vcpu_index, effective_addr, vaddr,
                              qemu_plugin_mem_is_store(info) ? "store" : "load");
-      g_string_append_printf(log_line, ",0x%" PRIx64, insn->addr);
-      g_string_append_printf(log_line, ",%s,", insn->disas_str);
+      g_string_append_printf(log_line, ", insn-vaddr: 0x%16" PRIx64, insn->vaddr);
+      g_string_append_printf(log_line, ", insn-physaddr: 0x%16" PRIx64,
+                             insn->addr);
+      g_string_append_printf(log_line, ",insn-disas: %s", insn->disas_str);
       if (insn->symbol) {
         g_string_append_printf(log_line, "(%s)", insn->symbol);
       }
@@ -504,6 +509,7 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
             data->disas_str = qemu_plugin_insn_disas(insn);
             data->symbol = qemu_plugin_insn_symbol(insn);
             data->addr = effective_addr;
+            data->vaddr = qemu_plugin_insn_vaddr(insn);
             g_hash_table_insert(miss_ht, &data->addr, data);
         }
         g_mutex_unlock(&hashtable_lock);

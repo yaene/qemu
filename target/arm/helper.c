@@ -9905,6 +9905,14 @@ void arm_log_exception(CPUState *cs)
         qemu_log_mask(CPU_LOG_INT, "Taking exception %d [%s] on CPU %d\n",
                       idx, exc, cs->cpu_index);
     }
+    if (idx == EXCP_DATA_ABORT) {
+      ARMCPU *cpu = ARM_CPU(cs);
+      CPUARMState *env = &cpu->env;
+      qemu_log_mask(CPU_LOG_PLUGIN,
+                    "PAGE FAULT cpu: %d, vaddr: 0x%" PRIx64
+                    ", insnaddr: 0x%" PRIx64 "\n",
+                    cs->cpu_index, env->exception.vaddress, env->pc);
+    }
 }
 
 /*
