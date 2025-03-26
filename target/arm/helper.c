@@ -9909,8 +9909,8 @@ void arm_log_exception(CPUState *cs)
       ARMCPU *cpu = ARM_CPU(cs);
       CPUARMState *env = &cpu->env;
       qemu_log_mask(CPU_LOG_PLUGIN,
-                    "PAGE FAULT cpu: %d, vaddr: 0x%016" PRIx64
-                    ", insnaddr: 0x%016" PRIx64 "\n",
+                    "ABORT,%d,0x%016" PRIx64
+                    ",0x%016" PRIx64 "\n",
                     cs->cpu_index, env->exception.vaddress, env->pc);
     }
 }

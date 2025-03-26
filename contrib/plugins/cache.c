@@ -59,6 +59,7 @@ enum EvictionPolicy policy;
 typedef struct {
     uint64_t tag;
     bool valid;
+    bool dirt;
 } CacheBlock;
 
 typedef struct {
@@ -357,7 +358,7 @@ static int in_cache(Cache *cache, uint64_t addr)
  * Returns true if the requested data is hit in the cache and false when missed.
  * The cache is updated on miss for the next access.
  */
-static bool access_cache(Cache *cache, uint64_t addr)
+static bool access_cache(Cache *cache, uint64_t addr, bool store, CacheBlock* write_back_block)
 {
     int hit_blk, replaced_blk;
     uint64_t tag, set;
@@ -367,6 +368,9 @@ static bool access_cache(Cache *cache, uint64_t addr)
 
     hit_blk = in_cache(cache, addr);
     if (hit_blk != -1) {
+        if (store) {
+            cache->sets[set].blocks[hit_blk].dirty = true;
+        }
         if (update_hit) {
             update_hit(cache, set, hit_blk);
         }
@@ -377,6 +381,9 @@ static bool access_cache(Cache *cache, uint64_t addr)
 
     if (replaced_blk == -1) {
         replaced_blk = get_replaced_block(cache, set);
+        if (cache->sets[set].blocks[replaced_blk].dirty) {
+            *write_back_block = cache->sets[set].blocks[replaced_blk];
+        }
     }
 
     if (update_miss) {
@@ -385,6 +392,9 @@ static bool access_cache(Cache *cache, uint64_t addr)
 
     cache->sets[set].blocks[replaced_blk].tag = tag;
     cache->sets[set].blocks[replaced_blk].valid = true;
+    if (store) {
+        cache->sets[set].blocks[replaced_blk].dirty = true;
+    }
 
     return false;
 }
@@ -397,6 +407,7 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     int cache_idx;
     InsnData *insn;
     bool hit_in_l1;
+    CacheBlock write_back_block = {0};
 
     hwaddr = qemu_plugin_get_hwaddr(info, vaddr);
     if (hwaddr && qemu_plugin_hwaddr_is_io(hwaddr)) {
@@ -407,7 +418,8 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     cache_idx = vcpu_index % cores;
 
     g_mutex_lock(&l1_dcache_locks[cache_idx]);
-    hit_in_l1 = access_cache(l1_dcaches[cache_idx], effective_addr);
+    hit_in_l1 =
+        access_cache(l1_dcaches[cache_idx], effective_addr, &write_back_block);
     if (!hit_in_l1) {
         insn = userdata;
         __atomic_fetch_add(&insn->l1_dmisses, 1, __ATOMIC_SEQ_CST);
@@ -416,40 +428,73 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     l1_dcaches[cache_idx]->accesses++;
     g_mutex_unlock(&l1_dcache_locks[cache_idx]);
 
-    if (hit_in_l1 || !use_l2) {
+    if (!use_l2) {
         /* No need to access L2 */
         return;
     }
 
+    if (write_back_block.valid) {
+        g_mutex_lock(&l2_ucache_locks[cache_idx]);
+        uint64_t write_back_addr =
+            write_back_block.tag |
+            (write_back_block.set << l1_dcaches[cache_idx]->blksize_shift);
+        uint64_t tag = extract_tag(l2_ucaches[cache_idx], write_back_addr);
+        uint64_t set = extract_set(l2_ucaches[cache_idx]);
+
+        for (int i = 0; i < l2_ucaches[cache_idx]->assoc; i++) {
+            if (l2_ucaches[cache_idx].sets[set].blocks[i].tag == tag) {
+                l2_ucaches[cache_idx].sets[set].blocks[i].dirty = true;
+            }
+        }
+        g_mutex_unlock(&l2_ucache_locks[cache_idx]);
+    }
+
+    if (hit_in_l1) {
+        return;
+    }
+
+    write_back_block = {0};
+
     g_mutex_lock(&l2_ucache_locks[cache_idx]);
-    if (!access_cache(l2_ucaches[cache_idx], effective_addr)) {
+    if (!access_cache(l2_ucaches[cache_idx], effective_addr, &write_back_block)) {
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
+        if (log_mem) {
+          g_autoptr(GString) log_line = g_string_new("");
+
+          if (write_back_block.valid) {
+            uint64_t write_back_addr =
+                write_back_block.tag |
+                (write_back_block.set << l2_ucaches[cache_idx]->blksize_shift);
+            g_string_append_printf(log_line,
+                                   "%" PRIu64 ",-1,0x%016" PRIx64 "\n",
+                                   inst_count[cache_idx], write_back_addr);
+            inst_count[cache_idx] = 0;
+          }
+          g_string_append_printf(
+              log_line, "%" PRIu64 ",0x%016" PRIx64 ",0x%016" PRIx64 "\n",
+              inst_count[cache_idx],
+              effective_addr &
+                  ~((1 << l2_ucaches[cache_idx]->blksize_shift) - 1),
+              vaddr);
+          /* g_string_append_printf(log_line, ", insn-vaddr: 0x%016" PRIx64,
+           * insn->vaddr); g_string_append_printf(log_line, ", insn-physaddr:
+           * 0x%016" PRIx64, insn->addr); g_string_append_printf(log_line,
+           * ",insn-disas: %s", insn->disas_str); if (insn->symbol) {
+           *   g_string_append_printf(log_line, "(%s)", insn->symbol);
+           * }
+           */
+          if (cache->sets[set].blocks[replaced_blk].valid &&) {
+          }
+          qemu_plugin_outs(log_line->str);
+          inst_count[cache_idx] = 0;
+        }
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
 
-    if (log_mem) {
-      g_autoptr(GString) log_line = g_string_new("");
 
-      g_string_append_printf(log_line,
-                             "%" PRIu64 ",0x%016" PRIx64
-                             ", virtaddr: 0x%016" PRIx64 ", type: %s",
-                             inst_count[cache_idx], effective_addr, vaddr,
-                             qemu_plugin_mem_is_store(info) ? "store" : "load");
-      g_string_append_printf(log_line, ", insn-vaddr: 0x%016" PRIx64, insn->vaddr);
-      g_string_append_printf(log_line, ", insn-physaddr: 0x%016" PRIx64,
-                             insn->addr);
-      g_string_append_printf(log_line, ",insn-disas: %s", insn->disas_str);
-      if (insn->symbol) {
-        g_string_append_printf(log_line, "(%s)", insn->symbol);
-      }
-      g_string_append(log_line, "\n");
-
-      qemu_plugin_outs(log_line->str);
-      inst_count[cache_idx] = 0;
-    }
 }
 
 static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
