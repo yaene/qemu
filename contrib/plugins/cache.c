@@ -59,7 +59,7 @@ enum EvictionPolicy policy;
 typedef struct {
     uint64_t tag;
     bool valid;
-    bool dirt;
+    bool dirty;
 } CacheBlock;
 
 typedef struct {
@@ -350,34 +350,26 @@ static int in_cache(Cache *cache, uint64_t addr)
     return -1;
 }
 
-void write_back_l1(Cache *l1_cache, Cache *l2_cache, int cache_idx,
-                   CacheBlock *write_back_block) {
-  if (write_back_block->valid) {
-    g_mutex_lock(&l2_ucache_locks[cache_idx]);
-    uint64_t write_back_addr =
-        write_back_block->tag |
-        (write_back_block->set << l1_cache->blksize_shift);
-    uint64_t tag = extract_tag(l2_cache, write_back_addr);
-    uint64_t set = extract_set(l2_cache);
+static void write_back_l1(Cache *l1_cache, Cache *l2_cache, int cache_idx,
+                          uint64_t write_back_addr) {
+  g_mutex_lock(&l2_ucache_locks[cache_idx]);
+  uint64_t tag = extract_tag(l2_cache, write_back_addr);
+  uint64_t set = extract_set(l2_cache, write_back_addr);
 
-    for (int i = 0; i < l2_cache->assoc; i++) {
-      if (l2_cache.sets[set].blocks[i].tag == tag) {
-        l2_cache.sets[set].blocks[i].dirty = true;
-      }
+  for (int i = 0; i < l2_cache->assoc; i++) {
+    if (l2_cache->sets[set].blocks[i].tag == tag) {
+      l2_cache->sets[set].blocks[i].dirty = true;
     }
-    g_mutex_unlock(&l2_ucache_locks[cache_idx]);
   }
+  g_mutex_unlock(&l2_ucache_locks[cache_idx]);
 }
 
-void log_mem_access(Cache *l2_cache, int cache_idx, uint64_t effective_addr,
-                    uint64_t vaddr, CacheBlock *write_back_block) {
+static void log_mem_access(Cache *l2_cache, int cache_idx, uint64_t effective_addr,
+                    uint64_t vaddr, uint64_t write_back_addr) {
   if (log_mem) {
     g_autoptr(GString) log_line = g_string_new("");
 
-    if (write_back_block->valid) {
-      uint64_t write_back_addr =
-          write_back_block->tag |
-          (write_back_block->set << l2_cache->blksize_shift);
+    if (write_back_addr) {
       g_string_append_printf(log_line, "%" PRIu64 ",-1,0x%016" PRIx64 "\n",
                              inst_count[cache_idx], write_back_addr);
       inst_count[cache_idx] = 0;
@@ -407,11 +399,12 @@ void log_mem_access(Cache *l2_cache, int cache_idx, uint64_t effective_addr,
  * Returns true if the requested data is hit in the cache and false when missed.
  * The cache is updated on miss for the next access.
  */
-static bool access_cache(Cache *cache, uint64_t addr, bool store, CacheBlock* write_back_block)
+static bool access_cache(Cache *cache, uint64_t addr, bool store, uint64_t* write_back_addr)
 {
     int hit_blk, replaced_blk;
     uint64_t tag, set;
 
+    *write_back_addr = 0;
     tag = extract_tag(cache, addr);
     set = extract_set(cache, addr);
 
@@ -429,10 +422,11 @@ static bool access_cache(Cache *cache, uint64_t addr, bool store, CacheBlock* wr
     replaced_blk = get_invalid_block(cache, set);
 
     if (replaced_blk == -1) {
-        replaced_blk = get_replaced_block(cache, set);
-        if (cache->sets[set].blocks[replaced_blk].dirty) {
-            *write_back_block = cache->sets[set].blocks[replaced_blk];
-        }
+      replaced_blk = get_replaced_block(cache, set);
+      if (cache->sets[set].blocks[replaced_blk].dirty) {
+        *write_back_addr = cache->sets[set].blocks[replaced_blk].tag |
+                           (set << cache->blksize_shift);
+      }
     }
 
     if (update_miss) {
@@ -456,7 +450,7 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     int cache_idx;
     InsnData *insn;
     bool hit_in_l1;
-    CacheBlock write_back_block = {0};
+    uint64_t write_back_addr;
 
     hwaddr = qemu_plugin_get_hwaddr(info, vaddr);
     if (hwaddr && qemu_plugin_hwaddr_is_io(hwaddr)) {
@@ -468,7 +462,7 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
 
     g_mutex_lock(&l1_dcache_locks[cache_idx]);
     hit_in_l1 =
-        access_cache(l1_dcaches[cache_idx], effective_addr, &write_back_block);
+        access_cache(l1_dcaches[cache_idx], effective_addr, qemu_plugin_mem_is_store(info), &write_back_addr);
     if (!hit_in_l1) {
         insn = userdata;
         __atomic_fetch_add(&insn->l1_dmisses, 1, __ATOMIC_SEQ_CST);
@@ -482,23 +476,24 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
         return;
     }
 
-    write_back_l1(l1_dcaches[cache_idx], l2_ucaches[cache_idx], cache_idx,
-                  &write_back_block);
+    if (write_back_addr) {
+      write_back_l1(l1_dcaches[cache_idx], l2_ucaches[cache_idx], cache_idx,
+                    write_back_addr);
+    }
 
     if (hit_in_l1) {
         return;
     }
 
-    write_back_block = {0};
-
     g_mutex_lock(&l2_ucache_locks[cache_idx]);
-    if (!access_cache(l2_ucaches[cache_idx], effective_addr, &write_back_block)) {
-        insn = userdata;
-        __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
-        l2_ucaches[cache_idx]->misses++;
+    if (!access_cache(l2_ucaches[cache_idx], effective_addr,
+                      qemu_plugin_mem_is_store(info), &write_back_addr)) {
+      insn = userdata;
+      __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
+      l2_ucaches[cache_idx]->misses++;
 
-        log_mem_access(l2_ucaches[cache_idx], cache_idx, effective_addr, vaddr,
-                       &write_back_block);
+      log_mem_access(l2_ucaches[cache_idx], cache_idx, effective_addr, vaddr,
+                     write_back_addr);
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
@@ -512,13 +507,13 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
     InsnData *insn;
     int cache_idx;
     bool hit_in_l1;
-    CacheBlock write_back_block = {0};
+    uint64_t write_back_addr;
 
     insn_addr = ((InsnData *) userdata)->addr;
     cache_idx = vcpu_index % cores;
-    ++inst_count[cache_index];
+    ++inst_count[cache_idx];
     g_mutex_lock(&l1_icache_locks[cache_idx]);
-    hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr, &write_back_block);
+    hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr, false, &write_back_addr);
     if (!hit_in_l1) {
         insn = userdata;
         __atomic_fetch_add(&insn->l1_imisses, 1, __ATOMIC_SEQ_CST);
@@ -532,22 +527,23 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
         return;
     }
 
-    write_back_l1(l1_icaches[cache_idx], l2_ucaches[cache_idx], cache_idx,
-                  &write_back_block);
+    if (write_back_addr) {
+      write_back_l1(l1_icaches[cache_idx], l2_ucaches[cache_idx], cache_idx,
+                    write_back_addr);
+    }
 
     if (hit_in_l1) {
         /* No need to access L2 */
         return;
     }
 
-    write_back_block = {0};
     g_mutex_lock(&l2_ucache_locks[cache_idx]);
-    if (!access_cache(l2_ucaches[cache_idx], insn_addr, &write_back_block)) {
+    if (!access_cache(l2_ucaches[cache_idx], insn_addr, false, &write_back_addr)) {
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
         log_mem_access(l2_ucaches[cache_idx], cache_idx, insn->addr,
-                       insn->vaddr, &write_back_block);
+                       insn->vaddr, write_back_addr);
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
