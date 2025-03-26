@@ -350,6 +350,55 @@ static int in_cache(Cache *cache, uint64_t addr)
     return -1;
 }
 
+void write_back_l1(Cache *l1_cache, Cache *l2_cache, int cache_idx,
+                   CacheBlock *write_back_block) {
+  if (write_back_block->valid) {
+    g_mutex_lock(&l2_ucache_locks[cache_idx]);
+    uint64_t write_back_addr =
+        write_back_block->tag |
+        (write_back_block->set << l1_cache->blksize_shift);
+    uint64_t tag = extract_tag(l2_cache, write_back_addr);
+    uint64_t set = extract_set(l2_cache);
+
+    for (int i = 0; i < l2_cache->assoc; i++) {
+      if (l2_cache.sets[set].blocks[i].tag == tag) {
+        l2_cache.sets[set].blocks[i].dirty = true;
+      }
+    }
+    g_mutex_unlock(&l2_ucache_locks[cache_idx]);
+  }
+}
+
+void log_mem_access(Cache *l2_cache, int cache_idx, uint64_t effective_addr,
+                    uint64_t vaddr, CacheBlock *write_back_block) {
+  if (log_mem) {
+    g_autoptr(GString) log_line = g_string_new("");
+
+    if (write_back_block->valid) {
+      uint64_t write_back_addr =
+          write_back_block->tag |
+          (write_back_block->set << l2_cache->blksize_shift);
+      g_string_append_printf(log_line, "%" PRIu64 ",-1,0x%016" PRIx64 "\n",
+                             inst_count[cache_idx], write_back_addr);
+      inst_count[cache_idx] = 0;
+    }
+    g_string_append_printf(
+        log_line, "%" PRIu64 ",0x%016" PRIx64 ",0x%016" PRIx64 "\n",
+        inst_count[cache_idx],
+        effective_addr & ~((1 << l2_cache->blksize_shift) - 1),
+        vaddr);
+    /* g_string_append_printf(log_line, ", insn-vaddr: 0x%016" PRIx64,
+     * insn->vaddr); g_string_append_printf(log_line, ", insn-physaddr:
+     * 0x%016" PRIx64, insn->addr); g_string_append_printf(log_line,
+     * ",insn-disas: %s", insn->disas_str); if (insn->symbol) {
+     *   g_string_append_printf(log_line, "(%s)", insn->symbol);
+     * }
+     */
+    qemu_plugin_outs(log_line->str);
+    inst_count[cache_idx] = 0;
+  }
+}
+
 /**
  * access_cache(): Simulate a cache access
  * @cache: The cache under simulation
@@ -433,21 +482,8 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
         return;
     }
 
-    if (write_back_block.valid) {
-        g_mutex_lock(&l2_ucache_locks[cache_idx]);
-        uint64_t write_back_addr =
-            write_back_block.tag |
-            (write_back_block.set << l1_dcaches[cache_idx]->blksize_shift);
-        uint64_t tag = extract_tag(l2_ucaches[cache_idx], write_back_addr);
-        uint64_t set = extract_set(l2_ucaches[cache_idx]);
-
-        for (int i = 0; i < l2_ucaches[cache_idx]->assoc; i++) {
-            if (l2_ucaches[cache_idx].sets[set].blocks[i].tag == tag) {
-                l2_ucaches[cache_idx].sets[set].blocks[i].dirty = true;
-            }
-        }
-        g_mutex_unlock(&l2_ucache_locks[cache_idx]);
-    }
+    write_back_l1(l1_dcaches[cache_idx], l2_ucaches[cache_idx], cache_idx,
+                  &write_back_block);
 
     if (hit_in_l1) {
         return;
@@ -460,36 +496,9 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
-        if (log_mem) {
-          g_autoptr(GString) log_line = g_string_new("");
 
-          if (write_back_block.valid) {
-            uint64_t write_back_addr =
-                write_back_block.tag |
-                (write_back_block.set << l2_ucaches[cache_idx]->blksize_shift);
-            g_string_append_printf(log_line,
-                                   "%" PRIu64 ",-1,0x%016" PRIx64 "\n",
-                                   inst_count[cache_idx], write_back_addr);
-            inst_count[cache_idx] = 0;
-          }
-          g_string_append_printf(
-              log_line, "%" PRIu64 ",0x%016" PRIx64 ",0x%016" PRIx64 "\n",
-              inst_count[cache_idx],
-              effective_addr &
-                  ~((1 << l2_ucaches[cache_idx]->blksize_shift) - 1),
-              vaddr);
-          /* g_string_append_printf(log_line, ", insn-vaddr: 0x%016" PRIx64,
-           * insn->vaddr); g_string_append_printf(log_line, ", insn-physaddr:
-           * 0x%016" PRIx64, insn->addr); g_string_append_printf(log_line,
-           * ",insn-disas: %s", insn->disas_str); if (insn->symbol) {
-           *   g_string_append_printf(log_line, "(%s)", insn->symbol);
-           * }
-           */
-          if (cache->sets[set].blocks[replaced_blk].valid &&) {
-          }
-          qemu_plugin_outs(log_line->str);
-          inst_count[cache_idx] = 0;
-        }
+        log_mem_access(l2_ucaches[cache_idx], cache_idx, effective_addr, vaddr,
+                       &write_back_block);
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
@@ -503,12 +512,13 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
     InsnData *insn;
     int cache_idx;
     bool hit_in_l1;
+    CacheBlock write_back_block = {0};
 
     insn_addr = ((InsnData *) userdata)->addr;
     cache_idx = vcpu_index % cores;
     ++inst_count[cache_index];
     g_mutex_lock(&l1_icache_locks[cache_idx]);
-    hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr);
+    hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr, &write_back_block);
     if (!hit_in_l1) {
         insn = userdata;
         __atomic_fetch_add(&insn->l1_imisses, 1, __ATOMIC_SEQ_CST);
@@ -517,16 +527,27 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
     l1_icaches[cache_idx]->accesses++;
     g_mutex_unlock(&l1_icache_locks[cache_idx]);
 
-    if (hit_in_l1 || !use_l2) {
+
+    if (!use_l2) {
+        return;
+    }
+
+    write_back_l1(l1_icaches[cache_idx], l2_ucaches[cache_idx], cache_idx,
+                  &write_back_block);
+
+    if (hit_in_l1) {
         /* No need to access L2 */
         return;
     }
 
+    write_back_block = {0};
     g_mutex_lock(&l2_ucache_locks[cache_idx]);
-    if (!access_cache(l2_ucaches[cache_idx], insn_addr)) {
+    if (!access_cache(l2_ucaches[cache_idx], insn_addr, &write_back_block)) {
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
+        log_mem_access(l2_ucaches[cache_idx], cache_idx, insn->addr,
+                       insn->vaddr, &write_back_block);
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
