@@ -90,6 +90,8 @@ typedef struct {
     uint64_t l2_misses;
 } InsnData;
 
+static GString** log_line;
+
 void (*update_hit)(Cache *cache, int set, int blk);
 void (*update_miss)(Cache *cache, int set, int blk);
 
@@ -97,7 +99,7 @@ void (*metadata_init)(Cache *cache);
 void (*metadata_destroy)(Cache *cache);
 
 static int cores;
-static uint64_t* inst_count;
+static uint64_t inst_count;
 static Cache **l1_dcaches, **l1_icaches;
 
 static bool use_l2;
@@ -426,30 +428,25 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
+        if (log_mem) {
+          uint64_t bubble_count = __atomic_exchange_n(&inst_count, 0, __ATOMIC_SEQ_CST);
+          g_string_truncate(log_line[cache_idx], 0);
+          g_string_append_printf(log_line[cache_idx], "%" PRIu64, bubble_count);
+          if (qemu_plugin_mem_is_store(info)) {
+            g_string_append_printf(log_line[cache_idx], ",-1,0x%016" PRIx64,
+                                   effective_addr);
+          } else {
+            g_string_append_printf(log_line[cache_idx], ",0x%016" PRIx64, effective_addr);
+          }
+
+          g_string_append(log_line[cache_idx], "\n");
+
+          qemu_plugin_outs(log_line[cache_idx]->str);
+        }
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
 
-    if (log_mem) {
-      g_autoptr(GString) log_line = g_string_new("");
-
-      g_string_append_printf(log_line,
-                             "%" PRIu64 ",0x%016" PRIx64
-                             ", virtaddr: 0x%016" PRIx64 ", type: %s",
-                             inst_count[cache_idx], effective_addr, vaddr,
-                             qemu_plugin_mem_is_store(info) ? "store" : "load");
-      g_string_append_printf(log_line, ", insn-vaddr: 0x%016" PRIx64, insn->vaddr);
-      g_string_append_printf(log_line, ", insn-physaddr: 0x%016" PRIx64,
-                             insn->addr);
-      g_string_append_printf(log_line, ",insn-disas: %s", insn->disas_str);
-      if (insn->symbol) {
-        g_string_append_printf(log_line, "(%s)", insn->symbol);
-      }
-      g_string_append(log_line, "\n");
-
-      qemu_plugin_outs(log_line->str);
-      inst_count[cache_idx] = 0;
-    }
 }
 
 static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
@@ -461,7 +458,8 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
 
     insn_addr = ((InsnData *) userdata)->addr;
     cache_idx = vcpu_index % cores;
-    ++inst_count[cache_index];
+
+    __atomic_fetch_add(&inst_count, 1, __ATOMIC_SEQ_CST);
     g_mutex_lock(&l1_icache_locks[cache_idx]);
     hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr);
     if (!hit_in_l1) {
@@ -482,6 +480,16 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
         insn = userdata;
         __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
         l2_ucaches[cache_idx]->misses++;
+        if (log_mem) {
+          g_string_truncate(log_line[cache_idx], 0);
+          uint64_t bubble_count = __atomic_exchange_n(&inst_count, 0, __ATOMIC_SEQ_CST);
+          g_string_append_printf(log_line[cache_idx], "%" PRIu64, bubble_count);
+          g_string_append_printf(log_line[cache_idx], ",0x%016" PRIx64, insn_addr);
+
+          g_string_append(log_line[cache_idx], "\n");
+
+          qemu_plugin_outs(log_line[cache_idx]->str);
+        }
     }
     l2_ucaches[cache_idx]->accesses++;
     g_mutex_unlock(&l2_ucache_locks[cache_idx]);
@@ -788,7 +796,6 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
     policy = LRU;
 
     cores = sys ? info->system.smp_vcpus : 1;
-    inst_count = g_new0(uint64_t, cores);
 
     for (i = 0; i < argc; i++) {
         char *opt = argv[i];
@@ -884,6 +891,10 @@ int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
     miss_ht = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, insn_free);
+    log_line = g_new0(GString *, cores);
+    for (i = 0; i < cores; ++i) {
+        log_line[i] = g_string_new("");
+    }
 
     return 0;
 }
