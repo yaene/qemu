@@ -47,6 +47,7 @@
 #include "exec/translator.h"
 #include "disas/disas.h"
 #include "plugin.h"
+#include "qemu/log-for-trace.h"
 #ifndef CONFIG_USER_ONLY
 #include "qapi/error.h"
 #include "migration/blocker.h"
@@ -639,6 +640,10 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
         total += qemu_plugin_u64_get(entry, i);
     }
     return total;
+}
+
+bool qemu_plugin_log_is_enabled(void) {
+    return qemu_loglevel_mask(CPU_LOG_PLUGIN);
 }
 
 /*
