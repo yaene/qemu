@@ -40,6 +40,7 @@ static GPtrArray *rmatches;
 static bool disas_assist;
 static GMutex add_reg_name_lock;
 static GPtrArray *all_reg_names;
+static uint64_t insn_count;
 
 static CPU *get_cpu(int vcpu_index)
 {
@@ -158,13 +159,17 @@ static void vcpu_insn_exec(unsigned int cpu_index, void *udata)
 
     /* Print previous instruction in cache */
     if (cpu->last_exec->len) {
-        qemu_plugin_outs(cpu->last_exec->str);
-        qemu_plugin_outs("\n");
+        uint64_t ts = __atomic_fetch_add(&insn_count, 1, __ATOMIC_RELAXED);
+        g_string_append_printf(cpu->last_exec, ",%" PRIu64"\n", ts);
+        if(cpu->last_exec->len >= (1024*1024 - 100)) {
+            qemu_plugin_outs(cpu->last_exec->str);
+            cpu->last_exec->len = 0;
+        }
     }
 
     /* Store new instruction in cache */
     /* vcpu_mem will add memory access information to last_exec */
-    g_string_printf(cpu->last_exec, "%u, ", cpu_index);
+    g_string_append_printf(cpu->last_exec, "%u, ", cpu_index);
     g_string_append(cpu->last_exec, (char *)udata);
 }
 
@@ -180,6 +185,10 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
     bool skip = (imatches || amatches);
     bool check_regs_this = rmatches;
     bool check_regs_next = false;
+
+    if(!qemu_plugin_log_is_enabled()) {
+        return;
+    }
 
     size_t n_insns = qemu_plugin_tb_n_insns(tb);
     for (size_t i = 0; i < n_insns; i++) {
@@ -387,7 +396,7 @@ static void vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
     g_rw_lock_writer_unlock(&expand_array_lock);
 
     c = get_cpu(vcpu_index);
-    c->last_exec = g_string_new(NULL);
+    c->last_exec = g_string_sized_new(1*1024*1024); // 1MB
     c->registers = registers_init(vcpu_index);
 }
 

@@ -19,7 +19,7 @@ static enum qemu_plugin_mem_rw rw = QEMU_PLUGIN_MEM_RW;
 
 static GHashTable *miss_ht;
 
-static GMutex hashtable_lock;
+//static GMutex hashtable_lock;
 static GRand *rng;
 
 static int limit;
@@ -396,9 +396,9 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
 {
     uint64_t effective_addr;
     struct qemu_plugin_hwaddr *hwaddr;
-    int cache_idx;
-    InsnData *insn;
-    bool hit_in_l1;
+    //int cache_idx;
+    //InsnData *insn;
+    //bool hit_in_l1;
 
     hwaddr = qemu_plugin_get_hwaddr(info, vaddr);
     if (hwaddr && qemu_plugin_hwaddr_is_io(hwaddr)) {
@@ -406,80 +406,82 @@ static void vcpu_mem_access(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     }
 
     effective_addr = hwaddr ? qemu_plugin_hwaddr_phys_addr(hwaddr) : vaddr;
-    cache_idx = vcpu_index % cores;
+    //cache_idx = vcpu_index % cores;
 
-    g_mutex_lock(&l1_dcache_locks[cache_idx]);
-    hit_in_l1 = access_cache(l1_dcaches[cache_idx], effective_addr);
-    if (!hit_in_l1) {
-        insn = userdata;
-        __atomic_fetch_add(&insn->l1_dmisses, 1, __ATOMIC_SEQ_CST);
-        l1_dcaches[cache_idx]->misses++;
+    //g_mutex_lock(&l1_dcache_locks[cache_idx]);
+    //hit_in_l1 = access_cache(l1_dcaches[cache_idx], effective_addr);
+    //if (!hit_in_l1) {
+        //insn = userdata;
+        //__atomic_fetch_add(&insn->l1_dmisses, 1, __ATOMIC_SEQ_CST);
+        //l1_dcaches[cache_idx]->misses++;
+    //}
+    //l1_dcaches[cache_idx]->accesses++;
+    //g_mutex_unlock(&l1_dcache_locks[cache_idx]);
+
+    //if (hit_in_l1 || !use_l2) {
+    //   /* No need to access L2 */
+    //   return;
+    //}
+
+    //g_mutex_lock(&l2_ucache_locks[cache_idx]);
+    //if (!access_cache(l2_ucaches[cache_idx], effective_addr)) {
+        //insn = userdata;
+        //__atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
+        //l2_ucaches[cache_idx]->misses++;
+    if (log_mem) {
+      uint64_t bubble_count =
+          __atomic_exchange_n(&inst_count, 0, __ATOMIC_SEQ_CST);
+      g_string_truncate(log_line[vcpu_index], 0);
+      g_string_append_printf(log_line[vcpu_index], "%" PRIu64, bubble_count);
+      if (qemu_plugin_mem_is_store(info)) {
+        g_string_append_printf(log_line[vcpu_index], ",-1,0x%016" PRIx64,
+                               effective_addr);
+      } else {
+        g_string_append_printf(log_line[vcpu_index], ",0x%016" PRIx64,
+                               effective_addr);
+      }
+
+      g_string_append(log_line[vcpu_index], "\n");
+
+      qemu_plugin_outs(log_line[vcpu_index]->str);
     }
-    l1_dcaches[cache_idx]->accesses++;
-    g_mutex_unlock(&l1_dcache_locks[cache_idx]);
-
-    if (hit_in_l1 || !use_l2) {
-        /* No need to access L2 */
-        return;
-    }
-
-    g_mutex_lock(&l2_ucache_locks[cache_idx]);
-    if (!access_cache(l2_ucaches[cache_idx], effective_addr)) {
-        insn = userdata;
-        __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
-        l2_ucaches[cache_idx]->misses++;
-        if (log_mem) {
-          uint64_t bubble_count = __atomic_exchange_n(&inst_count, 0, __ATOMIC_SEQ_CST);
-          g_string_truncate(log_line[cache_idx], 0);
-          g_string_append_printf(log_line[cache_idx], "%" PRIu64, bubble_count);
-          if (qemu_plugin_mem_is_store(info)) {
-            g_string_append_printf(log_line[cache_idx], ",-1,0x%016" PRIx64,
-                                   effective_addr);
-          } else {
-            g_string_append_printf(log_line[cache_idx], ",0x%016" PRIx64, effective_addr);
-          }
-
-          g_string_append(log_line[cache_idx], "\n");
-
-          qemu_plugin_outs(log_line[cache_idx]->str);
-        }
-    }
-    l2_ucaches[cache_idx]->accesses++;
-    g_mutex_unlock(&l2_ucache_locks[cache_idx]);
+    //}
+    //l2_ucaches[cache_idx]->accesses++;
+    //g_mutex_unlock(&l2_ucache_locks[cache_idx]);
 
 }
 
 static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
 {
     uint64_t insn_addr;
-    InsnData *insn;
+    //InsnData *insn;
     int cache_idx;
     bool hit_in_l1;
 
-    insn_addr = ((InsnData *) userdata)->addr;
+    insn_addr = (uint64_t) userdata;
     cache_idx = vcpu_index % cores;
 
-    __atomic_fetch_add(&inst_count, 1, __ATOMIC_SEQ_CST);
-    g_mutex_lock(&l1_icache_locks[cache_idx]);
-    hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr);
-    if (!hit_in_l1) {
-        insn = userdata;
-        __atomic_fetch_add(&insn->l1_imisses, 1, __ATOMIC_SEQ_CST);
-        l1_icaches[cache_idx]->misses++;
-    }
-    l1_icaches[cache_idx]->accesses++;
-    g_mutex_unlock(&l1_icache_locks[cache_idx]);
+    //__atomic_fetch_add(&inst_count, 1, __ATOMIC_SEQ_CST);
+    //g_mutex_lock(&l1_icache_locks[cache_idx]);
+    //hit_in_l1 = access_cache(l1_icaches[cache_idx], insn_addr);
+    //if (!hit_in_l1) {
+    //    insn = userdata;
+    //    __atomic_fetch_add(&insn->l1_imisses, 1, __ATOMIC_SEQ_CST);
+    //    l1_icaches[cache_idx]->misses++;
+    //}
+    //l1_icaches[cache_idx]->accesses++;
+    //g_mutex_unlock(&l1_icache_locks[cache_idx]);
 
-    if (hit_in_l1 || !use_l2) {
+    //if (hit_in_l1 || !use_l2) {
         /* No need to access L2 */
-        return;
-    }
+     //   return;
+    //}
 
-    g_mutex_lock(&l2_ucache_locks[cache_idx]);
+    //g_mutex_lock(&l2_ucache_locks[cache_idx]);
     if (!access_cache(l2_ucaches[cache_idx], insn_addr)) {
-        insn = userdata;
-        __atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
-        l2_ucaches[cache_idx]->misses++;
+        //insn = userdata;
+        //__atomic_fetch_add(&insn->l2_misses, 1, __ATOMIC_SEQ_CST);
+        //l2_ucaches[cache_idx]->misses++;
         if (log_mem) {
           g_string_truncate(log_line[cache_idx], 0);
           uint64_t bubble_count = __atomic_exchange_n(&inst_count, 0, __ATOMIC_SEQ_CST);
@@ -491,15 +493,15 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
           qemu_plugin_outs(log_line[cache_idx]->str);
         }
     }
-    l2_ucaches[cache_idx]->accesses++;
-    g_mutex_unlock(&l2_ucache_locks[cache_idx]);
+    //l2_ucaches[cache_idx]->accesses++;
+    //g_mutex_unlock(&l2_ucache_locks[cache_idx]);
 }
 
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
     size_t n_insns;
     size_t i;
-    InsnData *data;
+    //InsnData *data;
 
     if(!qemu_plugin_log_is_enabled()) {
         return;
@@ -517,24 +519,24 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
          * new entries for those instructions. Instead, we fetch the same
          * entry from the hash table and register it for the callback again.
          */
-        g_mutex_lock(&hashtable_lock);
-        data = g_hash_table_lookup(miss_ht, &effective_addr);
-        if (data == NULL) {
-            data = g_new0(InsnData, 1);
-            data->disas_str = qemu_plugin_insn_disas(insn);
-            data->symbol = qemu_plugin_insn_symbol(insn);
-            data->addr = effective_addr;
-            data->vaddr = qemu_plugin_insn_vaddr(insn);
-            g_hash_table_insert(miss_ht, &data->addr, data);
-        }
-        g_mutex_unlock(&hashtable_lock);
+        //g_mutex_lock(&hashtable_lock);
+        //data = g_hash_table_lookup(miss_ht, &effective_addr);
+        //if (data == NULL) {
+        //    data = g_new0(InsnData, 1);
+        //    data->disas_str = qemu_plugin_insn_disas(insn);
+        //    data->symbol = qemu_plugin_insn_symbol(insn);
+        //    data->addr = effective_addr;
+        //    data->vaddr = qemu_plugin_insn_vaddr(insn);
+        //    g_hash_table_insert(miss_ht, &data->addr, data);
+        //}
+        //g_mutex_unlock(&hashtable_lock);
 
         qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem_access,
                                          QEMU_PLUGIN_CB_NO_REGS,
-                                         rw, data);
+                                         rw, (void*)effective_addr);
 
         qemu_plugin_register_vcpu_insn_exec_cb(insn, vcpu_insn_exec,
-                                               QEMU_PLUGIN_CB_NO_REGS, data);
+                                               QEMU_PLUGIN_CB_NO_REGS, (void*)effective_addr);
     }
 }
 
