@@ -39,8 +39,8 @@ static int cpu_len;
 
 static uint64_t insn_count;
 
-static inline void log_write(LogRecord *value) {
-  fwrite(value, sizeof(LogRecord), 1, logfile);
+static inline void log_write(LogRecord *value, int cpu) {
+  fwrite(value, sizeof(LogRecord), 1, cpus[cpu].logfile);
 }
 
 static void vcpu_mem(unsigned int cpu_index, qemu_plugin_meminfo_t info,
@@ -64,7 +64,7 @@ static void vcpu_mem(unsigned int cpu_index, qemu_plugin_meminfo_t info,
   record.cpu = cpu_index;
   record.access_size = qemu_plugin_mem_size_shift(info);
   record.insn_count = __atomic_load_n(&insn_count, __ATOMIC_SEQ_CST);
-  log_write(&record);
+  log_write(&record, cpu_index);
 }
 
 static void vcpu_insn_exec(unsigned int cpu_index, void *udata) {
@@ -87,16 +87,23 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
   }
 }
 
-static void vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index) {}
+static void vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index) {
+  char filename[32];
+  snprintf(filename, 32, "log.txt.%d", vcpu_index);
+  cpus[vcpu_index].logfile = fopen(filename, "wb");
+}
 
-static void plugin_exit(qemu_plugin_id_t id, void *p) {}
+static void plugin_exit(qemu_plugin_id_t id, void *p) {
+  for (int i = 0; i < cpu_len; ++i) {
+    fclose(cpus[i].logfile);
+  }
+}
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info, int argc,
                                            char **argv) {
   cpus = malloc(info->system.max_vcpus * sizeof(CPU));
   cpu_len = info->system.max_vcpus;
-  logfile = fopen("merged.log", "wb");
   /* Register init, translation block and exit callbacks */
   qemu_plugin_register_vcpu_init_cb(id, vcpu_init);
   qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
