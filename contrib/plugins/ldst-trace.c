@@ -1,11 +1,24 @@
 /*
- * Copyright (C) 2021, Alexandre Iooss <erdnaxe@crans.org>
+ * This plugin creates a load store trace in a binary format given by struct
+ * LogRecord. It creates per-cpu-logfiles log.txt.[cpu idx]. The tracing is
+ * enabled when plugin logs are enabled (qemu monitor command `log plugin`). The
+ * tracing is disabled when plugin logs are disabled (qemu monitor command `log
+ * none`).
  *
- * Log instruction execution with memory access and register changes
+ * Attention: even when the tracing is disabled the plugin slows down the guest
+ * significantly. This is because the plugin callbacks are still injected during
+ * translation and executed they just do not do anything. One could disable the
+ * callback registering completely, but you run the risk of losing some
+ * load/stores due to qemu's caching of translation blocks. (I.e. it may still
+ * execute cached translation blocks without the plugin callbacks even when the
+ * plugin is enabled). If you do not need the plugin do not add it in the qemu
+ * command line to avoid slowdowns.
  *
- * License: GNU GPL, version 2 or later.
- *   See the COPYING file in the top-level directory.
+ * The logfiles are closed (and any pending writes flushed) on qemu monitor
+ * command `stop`. The logfiles are cleared and reopened on qemu monitor command
+ * `continue`.
  */
+
 #include <glib.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -14,8 +27,6 @@
 #include <unistd.h>
 
 #include <qemu-plugin.h>
-
-#define BUF_SIZE (1 * 1024 * 1024)
 
 typedef struct LogRecord {
   uint64_t insn_count;
