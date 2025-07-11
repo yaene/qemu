@@ -32,6 +32,11 @@
 #include "hw/mem/memory-device.h"
 #include "hw/intc/intc.h"
 #include "migration/misc.h"
+#include "qemu/plugin.h"
+#include "plugins/plugin.h"
+
+typedef void (*logfile_func_t)(void);
+extern struct qemu_plugin_state plugin;
 
 NameInfo *qmp_query_name(Error **errp)
 {
@@ -57,9 +62,20 @@ void qmp_stop(Error **errp)
     }
 
     if (runstate_check(RUN_STATE_INMIGRATE)) {
-        autostart = 0;
+      autostart = 0;
     } else {
-        vm_stop(RUN_STATE_PAUSED);
+      vm_stop(RUN_STATE_PAUSED);
+    }
+    logfile_func_t close_logfiles;
+    gpointer sym;
+    struct qemu_plugin_ctx *ctx;
+    QTAILQ_FOREACH(ctx, &plugin.ctxs, entry) {
+      if (g_module_symbol(ctx->handle, "close_logfiles", &sym)) {
+        close_logfiles = (logfile_func_t)sym;
+        if (close_logfiles) {
+          close_logfiles();
+        }
+      }
     }
 }
 
@@ -108,6 +124,17 @@ void qmp_cont(Error **errp)
         if (!migration_block_activate(&local_err)) {
             error_propagate(errp, local_err);
             return;
+        }
+        logfile_func_t open_logfiles;
+        gpointer sym;
+        struct qemu_plugin_ctx *ctx;
+        QTAILQ_FOREACH(ctx, &plugin.ctxs, entry) {
+          if (g_module_symbol(ctx->handle, "open_logfiles", &sym)) {
+            open_logfiles = (logfile_func_t)sym;
+            if (open_logfiles) {
+              open_logfiles();
+            }
+          }
         }
         vm_start();
     }

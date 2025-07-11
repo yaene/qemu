@@ -30,8 +30,6 @@ typedef struct CPU {
   LogRecord record;
 } CPU;
 
-static FILE *logfile;
-
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 static CPU *cpus;
@@ -87,17 +85,27 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
   }
 }
 
+QEMU_PLUGIN_EXPORT void close_logfiles(void) {
+  for (int i = 0; i < cpu_len; ++i) {
+    fclose(cpus[i].logfile);
+  }
+}
+
+QEMU_PLUGIN_EXPORT void open_logfiles(void) {
+  char filename[32];
+  for (int i = 0; i < cpu_len; ++i) {
+    snprintf(filename, 32, "log.txt.%d", i);
+    cpus[i].logfile = fopen(filename, "wb");
+  }
+}
+
 static void vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index) {
   char filename[32];
   snprintf(filename, 32, "log.txt.%d", vcpu_index);
   cpus[vcpu_index].logfile = fopen(filename, "wb");
 }
 
-static void plugin_exit(qemu_plugin_id_t id, void *p) {
-  for (int i = 0; i < cpu_len; ++i) {
-    fclose(cpus[i].logfile);
-  }
-}
+static void plugin_exit(qemu_plugin_id_t id, void *p) { close_logfiles(); }
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info, int argc,

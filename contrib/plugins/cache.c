@@ -456,7 +456,7 @@ static void vcpu_insn_exec(unsigned int vcpu_index, void *userdata)
     uint64_t insn_addr;
     //InsnData *insn;
     int cache_idx;
-    bool hit_in_l1;
+    //bool hit_in_l1;
 
     insn_addr = (uint64_t) userdata;
     cache_idx = vcpu_index % cores;

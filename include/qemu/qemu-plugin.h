@@ -120,7 +120,8 @@ typedef struct qemu_info_t {
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info,
                                            int argc, char **argv);
-
+QEMU_PLUGIN_EXPORT void open_logfiles(void);
+QEMU_PLUGIN_EXPORT void close_logfiles(void);
 /**
  * typedef qemu_plugin_simple_cb_t - simple callback
  * @id: the unique qemu_plugin_id_t
