@@ -29,6 +29,7 @@
 #include <qemu-plugin.h>
 
 typedef struct LogRecord {
+  uint64_t logical_clock;
   uint64_t insn_count;
   char cpu;
   char store;
@@ -46,7 +47,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 static CPU *cpus;
 static int cpu_len;
 
-static uint64_t insn_count;
+static uint64_t logical_clock;
+static uint64_t *insn_count;
 
 static inline void log_write(LogRecord *value, int cpu) {
   fwrite(value, sizeof(LogRecord), 1, cpus[cpu].logfile);
@@ -72,7 +74,8 @@ static void vcpu_mem(unsigned int cpu_index, qemu_plugin_meminfo_t info,
   record.address = addr;
   record.cpu = cpu_index;
   record.access_size = qemu_plugin_mem_size_shift(info);
-  record.insn_count = __atomic_load_n(&insn_count, __ATOMIC_SEQ_CST);
+  record.logical_clock = __atomic_load_n(&logical_clock, __ATOMIC_SEQ_CST);
+  record.insn_count = insn_count[cpu_index];
   log_write(&record, cpu_index);
 }
 
@@ -80,7 +83,8 @@ static void vcpu_insn_exec(unsigned int cpu_index, void *udata) {
   if (!qemu_plugin_log_is_enabled()) {
     return;
   }
-  __atomic_fetch_add(&insn_count, 1, __ATOMIC_SEQ_CST);
+  ++insn_count[cpu_index];
+  __atomic_fetch_add(&logical_clock, 1, __ATOMIC_SEQ_CST);
 }
 
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
@@ -121,8 +125,10 @@ static void plugin_exit(qemu_plugin_id_t id, void *p) { close_logfiles(); }
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info, int argc,
                                            char **argv) {
-  cpus = malloc(info->system.max_vcpus * sizeof(CPU));
   cpu_len = info->system.max_vcpus;
+  cpus = malloc(cpu_len * sizeof(CPU));
+  insn_count = calloc(cpu_len, sizeof(uint64_t));
+
   /* Register init, translation block and exit callbacks */
   qemu_plugin_register_vcpu_init_cb(id, vcpu_init);
   qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
