@@ -408,6 +408,8 @@ static void xen_block_realize(XenDevice *xendev, Error **errp)
     }
 
     xen_device_backend_printf(xendev, "info", "%u", blockdev->info);
+    xen_device_backend_printf(xendev, "mode",
+                              (blockdev->info & VDISK_READONLY) ? "r" : "w");
 
     xen_device_frontend_printf(xendev, "virtual-device", "%lu",
                                vdev->number);
@@ -677,7 +679,7 @@ static const Property xen_block_props[] = {
                      TYPE_IOTHREAD, IOThread *),
 };
 
-static void xen_block_class_init(ObjectClass *class, void *data)
+static void xen_block_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
     XenDeviceClass *xendev_class = XEN_DEVICE_CLASS(class);
@@ -722,7 +724,7 @@ static void xen_disk_realize(XenBlockDevice *blockdev, Error **errp)
     blockdev->info = blk_supports_write_perm(conf->blk) ? 0 : VDISK_READONLY;
 }
 
-static void xen_disk_class_init(ObjectClass *class, void *data)
+static void xen_disk_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
     XenBlockDeviceClass *blockdev_class = XEN_BLOCK_DEVICE_CLASS(class);
@@ -769,7 +771,7 @@ static void xen_cdrom_realize(XenBlockDevice *blockdev, Error **errp)
     blockdev->info = VDISK_READONLY | VDISK_CDROM;
 }
 
-static void xen_cdrom_class_init(ObjectClass *class, void *data)
+static void xen_cdrom_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
     XenBlockDeviceClass *blockdev_class = XEN_BLOCK_DEVICE_CLASS(class);

@@ -16,7 +16,7 @@
 #include "system/numa.h"
 #include "qapi/qapi-types-machine.h"
 #include "qom/object.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qemu/bitmap.h"
 #include "qemu/thread-context.h"
 
@@ -92,5 +92,8 @@ void host_memory_backend_set_mapped(HostMemoryBackend *backend, bool mapped);
 bool host_memory_backend_is_mapped(HostMemoryBackend *backend);
 size_t host_memory_backend_pagesize(HostMemoryBackend *memdev);
 char *host_memory_backend_get_name(HostMemoryBackend *backend);
+
+long qemu_minrampagesize(void);
+long qemu_maxrampagesize(void);
 
 #endif
